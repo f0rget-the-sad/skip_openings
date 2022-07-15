@@ -2,15 +2,7 @@
 import sys
 import subprocess
 
-def find_image_ts(video, image, max_duration):
-    # with long videos ffmpeg is still buffering output, perform search in steps
-    start = 0
-    step = 30
-    while start < max_duration:
-        if found := find_in_split(video, image, start, step):
-            return found
-
-def find_in_split(video, image, start, duration):
+def find_image_ts(video, image):
     """
     Find first image occurrence in video
     from: https://stackoverflow.com/questions/57447740
@@ -21,7 +13,10 @@ def find_in_split(video, image, start, duration):
     extract_planes = "[0]extractplanes=y[v];[1]extractplanes=y[i];[v][i]"
     # Blend two video frames into each other and detect the black frame
     # - https://ffmpeg.org/ffmpeg-filters.html#blackframe
-    match_filters = "blend=difference,blackframe=0"
+    # settb - MKV has a fixed tb of 1/1000 and so trim duration does not take
+    # effect. AVIs contain no timestamps, and ffmpeg will set tb to 1/fps. No
+    # harm in always setting it
+    match_filters = "blend=difference,settb=1/10000,blackframe=0"
     # metadata filter only passes through frames with blackframe value of 100
     meta_select = "metadata=select:key=lavfi.blackframe.pblack:value=100:function=equal"
     # trim filter stops a 2nd frame from passing through (except if your video's
@@ -29,10 +24,9 @@ def find_in_split(video, image, start, duration):
     trim_filter = "trim=duration=0.0001"
     #  The 2nd metadata filter prints the selected frame's metadata.
     meta_print = "metadata=print:file=-"
-    ffmpeg_cmd = f"ffmpeg -ss {start} -t {duration} -i {video} -i {image} -an\
-            -filter_complex \
+    ffmpeg_cmd = f"ffmpeg -i {video} -i {image} -filter_complex \
                 \"{extract_planes}{match_filters},{meta_select},{trim_filter},{meta_print}\"\
-            -f null -"
+                -an -v 0 -vsync 0 -f null -"
     print(ffmpeg_cmd)
     try:
         output = subprocess.check_output(ffmpeg_cmd, stderr=subprocess.STDOUT, shell=True)
@@ -44,7 +38,7 @@ def find_in_split(video, image, start, duration):
     for l in output.splitlines():
         if l.startswith(b"frame:"):
             res = l.split(b"pts_time:")[-1]
-            return start + float(res.decode("utf-8"))
+            return float(res.decode("utf-8"))
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
@@ -58,6 +52,6 @@ if __name__ == "__main__":
     with open("intro_time.csv", "w") as f:
         for video in videos:
             print(f"Searching for intro in '{video}'")
-            start_time = find_image_ts(video, image, 5 * 60)
+            start_time = find_image_ts(video, image)
             end_time = start_time + duration if start_time is not None else None
             f.write(f"{video},{start_time},{end_time}")
