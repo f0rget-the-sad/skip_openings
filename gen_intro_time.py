@@ -3,8 +3,7 @@ import sys
 import subprocess
 
 def find_image_ts(video, image, max_duration):
-    # ffmpeg search in all video, event with shortest=1,
-    # so move with 1 min step
+    # with long videos ffmpeg is still buffering output, perform search in steps
     start = 0
     step = 30
     while start < max_duration:
@@ -14,13 +13,27 @@ def find_image_ts(video, image, max_duration):
 def find_in_split(video, image, start, duration):
     """
     Find first image occurrence in video
+    from: https://stackoverflow.com/questions/57447740
     """
-    ffmpeg_cmd = f"ffmpeg -ss {start} -t {duration} -i {video} -loop 1 -i {image} -an \
-        -filter_complex \"blend=difference:shortest=1,blackframe=98:32\" -f null -"
-    print(ffmpeg_cmd)
-    # shortest=1 - stop at first match
+
+    #  blackframe only looks at luma, use extractplanes both to speed up blend
+    #  and also avoid any unexpected format conversions blend may request.
+    extract_planes = "[0]extractplanes=y[v];[1]extractplanes=y[i];[v][i]"
     # Blend two video frames into each other and detect the black frame
     # - https://ffmpeg.org/ffmpeg-filters.html#blackframe
+    match_filters = "blend=difference,blackframe=0"
+    # metadata filter only passes through frames with blackframe value of 100
+    meta_select = "metadata=select:key=lavfi.blackframe.pblack:value=100:function=equal"
+    # trim filter stops a 2nd frame from passing through (except if your video's
+    # fps is greater than 10000)
+    trim_filter = "trim=duration=0.0001"
+    #  The 2nd metadata filter prints the selected frame's metadata.
+    meta_print = "metadata=print:file=-"
+    ffmpeg_cmd = f"ffmpeg -ss {start} -t {duration} -i {video} -i {image} -an\
+            -filter_complex \
+                \"{extract_planes}{match_filters},{meta_select},{trim_filter},{meta_print}\"\
+            -f null -"
+    print(ffmpeg_cmd)
     try:
         output = subprocess.check_output(ffmpeg_cmd, stderr=subprocess.STDOUT, shell=True)
     except subprocess.CalledProcessError as e:
@@ -29,8 +42,8 @@ def find_in_split(video, image, start, duration):
     if output is None:
         return None
     for l in output.splitlines():
-        if l.startswith(b"[Parsed_blackframe_"):
-            res = l.split(b"t:")[1].split()[0]
+        if l.startswith(b"frame:"):
+            res = l.split(b"pts_time:")[-1]
             return start + float(res.decode("utf-8"))
 
 if __name__ == "__main__":
